@@ -1,7 +1,6 @@
 """Celery task for processing failed jobs that haven't been published."""
 
 import logging
-from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from app.celery_app import celery_app
@@ -45,14 +44,11 @@ def process_failed_jobs():
     """
     session = get_sync_session()
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-
         failed_jobs = (
             session.query(Job)
             .filter(
                 Job.status == JobStatus.FAILED.value,
                 Job.published == False,  # noqa: E712
-                (Job.retry_after.is_(None)) | (Job.retry_after < now),
             )
             .limit(50)
             .all()

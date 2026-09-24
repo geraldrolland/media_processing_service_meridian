@@ -85,9 +85,9 @@ def process_upload_tasks():
                 files_to_upload = upload_task.upload_files or []
                 object_keys = [resolve_object_key(fp, settings.vid_transcode_dir) for fp in files_to_upload]
 
-                with ThreadPoolExecutor(max_workers=min(len(files_to_upload), 3)) as pool:
+                with ThreadPoolExecutor(max_workers=min(len(files_to_upload), len(object_keys))) as pool:
                     futures = {
-                        pool.submit(upload_object, fp, ok): (fp, ok)
+                        pool.submit(upload_object, fp, ok, settings.minio_segment_bucket): (fp, ok)
                         for fp, ok in zip(files_to_upload, object_keys)
                     }
                     for future in as_completed(futures):

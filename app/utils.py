@@ -1,8 +1,42 @@
 """Utility functions for the media processing service."""
 
 import os
+import re
+
+import ffmpeg
 
 from app.config import settings
+
+
+def get_video_duration(file_path: str) -> float:
+    """Get the duration of a video file in seconds.
+
+    Args:
+        file_path: Path to the video file.
+
+    Returns:
+        Duration in seconds as a float.
+    """
+    probe = ffmpeg.probe(file_path)
+    return float(probe["format"]["duration"])
+
+
+def get_video_framerate(video_file_path: str) -> float:
+    """Get the frame rate of a video file in frames per second.
+
+    Args:
+        video_file_path: Path to the video file.
+
+    Returns:
+        Frame rate in frames per second as a float.
+    """
+    probe = ffmpeg.probe(video_file_path)
+    video_stream = next(
+        s for s in probe["streams"] if s["codec_type"] == "video"
+    )
+    r_frame_rate: str = video_stream["r_frame_rate"]
+    num, den = map(int, r_frame_rate.split("/"))
+    return num / den
 
 
 def build_object_url(object_key: str, bucket_name: str) -> str:
@@ -24,6 +58,8 @@ def resolve_object_key(file_path: str, prefix: str) -> str:
     File paths look like: /app/vid_transcoded/{video_id}/{rendition}/{segment}.mp4
     Object key: {video_id}/{rendition}/{segment}.mp4
 
+    For .m4s files, trailing _<8-hex-char uuid> is also stripped.
+
     Args:
         file_path: The local file path to resolve.
         prefix: The directory prefix to strip (e.g. vid_transcode_dir).
@@ -35,6 +71,9 @@ def resolve_object_key(file_path: str, prefix: str) -> str:
     prefix = prefix.strip("/").split("/")[-1]
     try:
         idx = parts.index(prefix)
-        return "/".join(parts[idx + 1:])
+        key = "/".join(parts[idx + 1:])
     except ValueError:
-        return "/".join(parts[-3:]) if len(parts) >= 3 else os.path.basename(file_path)
+        key = "/".join(parts[-3:]) if len(parts) >= 3 else os.path.basename(file_path)
+
+    key = re.sub(r"_[0-9a-f]{8}(?=\.m4s$)", "", key)
+    return key

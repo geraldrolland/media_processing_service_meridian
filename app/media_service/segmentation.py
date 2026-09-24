@@ -15,7 +15,7 @@ class Segmentation:
         Returns:
             List of segment file paths.
         """
-        segment_pattern = os.path.join(self.output_dir, f"{self.seg_prefix}_%03d.mp4")
+        segment_pattern = os.path.join(self.output_dir, f"{self.seg_prefix}%d.mp4")
         command = [
             "ffmpeg",
             "-i", self.video_path,
@@ -23,10 +23,11 @@ class Segmentation:
             "-c:a", "aac",
             "-f", "segment",
             "-segment_time", str(self.seg_duration),
-            "-reset_timestamps", "1",
+            "-segment_start_number", "1",
+            "-reset_timestamps", "1",            
             segment_pattern
         ]
         subprocess.run(command, check=True)
 
         # Return list of generated segment files
-        return sorted(glob.glob(os.path.join(self.output_dir, f"{self.seg_prefix}_*.mp4")))
+        return sorted(glob.glob(os.path.join(self.output_dir, f"{self.seg_prefix}*.mp4")))

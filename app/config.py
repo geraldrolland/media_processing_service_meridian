@@ -4,6 +4,8 @@ All settings are loaded from environment variables via pydantic-settings.
 Falls back to sensible defaults for local development.
 """
 
+from typing import Any
+
 from pydantic_settings import BaseSettings
 
 
@@ -38,7 +40,7 @@ class Settings(BaseSettings):
     minio_endpoint: str = "minio:9000"
     minio_access_key: str = "minioadmin"
     minio_secret_key: str = "minioadmin"
-    minio_upload_bucket: str = "viduploads"
+    minio_download_bucket: str = "viduploads"
     minio_segment_bucket: str = "vidsegments"
     minio_thumbnail_bucket: str = "vidthumbnails"
     minio_secure: bool = False
@@ -50,10 +52,21 @@ class Settings(BaseSettings):
     vid_segment_dir: str = "/tmp/segments"
     vid_thumbnail_dir: str = "/tmp/thumbnails"
     vid_transcode_dir: str = "/tmp/transcoded"
+    segment_duration: int = 6
+    segment_prefix: str = "seg_"
 
     @property
     def db_dsn(self) -> str:
         return self.database_url
+
+    @property
+    def renditions(self) -> dict[str, dict[str, Any]]:
+        return {
+            "360p": {"width": 640, "height": 360, "bitrate": "800k"},
+            "480p": {"width": 854, "height": 480, "bitrate": "1400k"},
+            "720p": {"width": 1280, "height": 720, "bitrate": "2500k"},
+            "1080p": {"width": 1920, "height": 1080, "bitrate": "4500k"},
+        }
 
     class Config:
         env_file = ".env"

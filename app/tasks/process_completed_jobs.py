@@ -1,7 +1,8 @@
 """Celery task for processing completed jobs that haven't been published."""
 
 import logging
-from datetime import datetime, timedelta, timezone
+import os
+from urllib.parse import urlparse
 
 from app.celery_app import celery_app
 from app.db_config import get_sync_session
@@ -12,7 +13,7 @@ from app.models.outbox import Outbox
 from app.models.transcode_task import TranscodeTask
 from app.models.upload_task import UploadTask, UploadStatus
 from app.config import settings
-from app.utils import resolve_object_key, build_object_url
+from app.utils import resolve_object_key, build_object_url, get_video_duration, get_video_framerate
 
 logger = logging.getLogger(__name__)
 
@@ -43,14 +44,11 @@ def process_completed_jobs():
     """
     session = get_sync_session()
     try:
-        now = datetime.now(timezone.utc).replace(tzinfo=None)
-
         completed_jobs = (
             session.query(Job)
             .filter(
                 Job.status == JobStatus.COMPLETED.value,
                 Job.published == False,  # noqa: E712
-                (Job.retry_after.is_(None)) | (Job.retry_after < now),
             )
             .limit(50)
             .all()
@@ -72,9 +70,6 @@ def process_completed_jobs():
                     logger.debug("PROCESSING lock held for %s, skipping", job.id)
                     continue
 
-                # 2. Cleanup temp files
-                cleanup.cleanup_temp_files(job.video_id)
-
                 # 3. Get UploadTasks for this job where status=COMPLETED
                 transcode_ids = [
                     t.id for t in
@@ -95,45 +90,52 @@ def process_completed_jobs():
                     .all()
                 )
 
-                # 4. Collect segments_object_urls
-                segments_object_urls = []
-                for upload_task in completed_uploads:
-                    files = upload_task.upload_files or []
-                    for fp in files:
-                        ok = resolve_object_key(fp, settings.vid_transcode_dir)
-                        url = build_object_url(ok, settings.minio_segment_bucket)
-                        segments_object_urls.append(url)
+                # 4. build manifest_metadata
+                parsed_url = urlparse(job.object_url)
+                _, ext = os.path.splitext(os.path.basename(parsed_url.path))
+                video_file_path = os.path.join(
+                    settings.vid_download_dir, f"{job.video_id}{ext}"
+                )
+                manifest_metadata = {
+                    "manifest_type": "static",
+                    "video_duration": get_video_duration(video_file_path),
+                    "framerate": get_video_framerate(video_file_path),
+                    "segment_duration": settings.segment_duration,
+                    "renditions": settings.renditions,
+                    "media_prefix": f"{settings.minio_segment_bucket}/{job.video_id}/",
+                    "segment_filename_prefix": settings.segment_prefix,
+                }
 
-                if not segments_object_urls:
-                    logger.debug("No segment URLs for job %s, skipping", job.id)
-                    continue
+                # 5. Cleanup temp files (after duration extraction)
+                cleanup.cleanup_temp_files(job.video_id)
 
-                # 5. COMMITTING lock
+                # 6. COMMITTING lock
                 committing_lock = acquire_lock(LockState.COMMITTING, job.id)
                 if committing_lock is None:
                     logger.warning("COMMITTING lock held for %s, skipping", job.id)
                     continue
 
-                # 6. Create Outbox event
+                # 7. Create Outbox event
                 outbox = Outbox(
                     topic="job.completed",
                     payload={
                         "video_id": job.video_id,
                         "job_id": job.id,
-                        "segments_object_urls": segments_object_urls,
+                        "origin_service": "media_processing_service",
                         "thumbnail_url": job.vid_thumbnail_url,
+                        "manifest_metadata": manifest_metadata,
+
                     },
                 )
                 session.add(outbox)
 
-                # 7. Set published = True
+                # 8. Set published = True
                 job.published = True
 
-                # 8. Commit
+                # 9. Commit
                 session.commit()
                 processed += 1
-
-                logger.info("Job %s published, %d segment URLs", job.id, len(segments_object_urls))
+                logger.info("Processed completed job %s", job.id)
 
             except Exception:
                 session.rollback()

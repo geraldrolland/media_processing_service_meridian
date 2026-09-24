@@ -94,36 +94,12 @@ def process_transcode_tasks():
                     )
                     continue
 
-                # 3. Transcode
-                transcoder = MediaTranscoder(input_file=task.input_file)
-                results: dict[str, bytes] = transcoder.run_transcoder()
-
-                # 4. Save each rendition
-                segment_stem = os.path.splitext(
-                    os.path.basename(task.input_file)
-                )[0]
-                saved_files: list[str] = []
-
-                for rendition, data in results.items():
-                    out_dir = os.path.join(
-                        os.getcwd(), "vid_transcoded", video_id, rendition
-                    )
-                    os.makedirs(out_dir, exist_ok=True)
-
-                    out_path = os.path.join(
-                        out_dir,
-                        f"{segment_stem}_{uuid.uuid4().hex[:8]}.mp4",
-                    )
-                    with open(out_path, "wb") as f:
-                        f.write(data)
-                    saved_files.append(out_path)
-
-                    logger.info(
-                        "Saved %s rendition → %s (%d bytes)",
-                        rendition,
-                        out_path,
-                        len(data),
-                    )
+                # 3. Transcode and save
+                transcoder = MediaTranscoder(
+                    input_file=task.input_file,
+                    output_dir=os.path.join(os.getcwd(), "vid_transcoded"),
+                )
+                saved_files = transcoder.run_transcoder()
 
                 # 5. COMMITTING lock — guards DB write
                 committing_lock = acquire_lock(LockState.COMMITTING, task.id)

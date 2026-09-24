@@ -3,6 +3,7 @@
 import logging
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
@@ -10,8 +11,8 @@ from app.celery_app import celery_app
 from app.db_config import get_sync_session
 from app.lock import acquire_lock, release_lock, LockState
 from app.minio_client import download_object, upload_object
-from app.utils import build_object_url
-from app.media_service import GenerateThumbnail, Segmentation
+from app.utils import build_object_url, resolve_object_key
+from app.media_service import GenerateInit, GenerateThumbnail, Segmentation
 from app.models.job import Job, JobStatus
 from app.models.outbox import Outbox
 from app.models.transcode_task import TranscodeTask
@@ -89,7 +90,7 @@ def process_queued_jobs():
                 save_path = os.path.join(download_dir, f"{job.video_id}{ext}")
 
                 if not os.path.exists(save_path):
-                    download_object(job.object_url, save_path, settings.minio_upload_bucket)
+                    download_object(job.object_url, save_path, settings.minio_download_bucket)
                 else:
                     logger.info(
                         "Video %s already downloaded at %s",
@@ -110,7 +111,7 @@ def process_queued_jobs():
                 thumbnail_path = generator.generate_thumbnail()
 
                 # 4. Upload thumbnail to MinIO
-                thumb_object_key = f"{job.video_id}/{os.path.basename(thumbnail_path)}"
+                thumb_object_key = resolve_object_key(thumbnail_path, settings.vid_thumbnail_dir)
                 upload_object(thumbnail_path, thumb_object_key, settings.minio_thumbnail_bucket)
 
                 job.vid_thumbnail_url = build_object_url(thumb_object_key, settings.minio_thumbnail_bucket)
@@ -121,7 +122,41 @@ def process_queued_jobs():
                     job.vid_thumbnail_url,
                 )
 
-                # 5. Segment the video
+                # 5. Generate init segments
+                init_output_dir = os.path.join(settings.vid_transcode_dir, job.video_id)
+                os.makedirs(init_output_dir, exist_ok=True)
+
+                init_generator = GenerateInit(
+                    input_file=save_path,
+                    output_dir=init_output_dir,
+                    representation=list(settings.renditions.keys()),
+                )
+                init_paths = init_generator.generate_init_file()
+
+                # 6. Upload init files to MinIO via thread pool
+                init_object_keys = [
+                    resolve_object_key(fp, settings.vid_transcode_dir)
+                    for fp in init_paths
+                ]
+
+                with ThreadPoolExecutor(max_workers=len(init_paths)) as pool:
+                    futures = {
+                        pool.submit(
+                            upload_object, fp, ok, settings.minio_segment_bucket
+                        ): (fp, ok)
+                        for fp, ok in zip(init_paths, init_object_keys)
+                    }
+                    for future in as_completed(futures):
+                        fp, ok = futures[future]
+                        future.result()
+
+                logger.info(
+                    "Uploaded %d init files for job %s",
+                    len(init_paths),
+                    job.id,
+                )
+
+                # 7. Segment the video
                 seg_output_dir = os.path.join(
                     settings.vid_segment_dir, job.video_id
                 )
@@ -130,12 +165,12 @@ def process_queued_jobs():
                 segmenter = Segmentation(
                     video_path=save_path,
                     output_dir=seg_output_dir,
-                    seg_prefix=f"{job.video_id}_seg",
-                    seg_duration=6,
+                    seg_prefix=settings.segment_prefix,
+                    seg_duration=settings.segment_duration,
                 )
                 segment_paths = segmenter.generate_segments()
 
-                # 6. COMMITTING lock — guards DB write
+                # 8. COMMITTING lock — guards DB write
                 committing_lock = acquire_lock(LockState.COMMITTING, job.id)
                 if committing_lock is None:
                     logger.warning(
@@ -143,7 +178,7 @@ def process_queued_jobs():
                     )
                     continue
 
-                # 7. Create TranscodeTask for each segment + update Job
+                # 9. Create TranscodeTask for each segment + update Job
                 job.status = JobStatus.PROCESSING.value
                 for path in segment_paths:
                     task = TranscodeTask(

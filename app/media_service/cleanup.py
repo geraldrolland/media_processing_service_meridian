@@ -37,7 +37,7 @@ class MediaCleanup:
         logger.info("Cleaned up %d objects from %s", len(object_keys), bucket_name)
 
     def cleanup_temp_files(self, video_id: str):
-        """Remove the video_id subdirectory from each temp directory."""
+        """Remove any file or directory whose name starts with *video_id*."""
         dirs = [
             settings.vid_download_dir,
             settings.vid_segment_dir,
@@ -45,7 +45,13 @@ class MediaCleanup:
             settings.vid_thumbnail_dir,
         ]
         for base_dir in dirs:
-            path = os.path.join(base_dir, video_id)
-            if os.path.exists(path):
-                shutil.rmtree(path)
-                logger.info("Removed temp dir: %s", path)
+            if not os.path.isdir(base_dir):
+                continue
+            for entry in os.listdir(base_dir):
+                if entry.startswith(video_id):
+                    path = os.path.join(base_dir, entry)
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+                    logger.info("Removed: %s", path)

@@ -6,6 +6,7 @@ injects a UTC timestamp before sending to Kafka.
 
 import json
 import logging
+import uuid
 from datetime import datetime, timezone
 
 from kafka import KafkaProducer as SyncKafkaProducer
@@ -49,13 +50,14 @@ class KafkaProducer:
     def publish(self, topic: str, payload: dict) -> None:
         """Publish a message to Kafka synchronously.
 
-        Injects a UTC timestamp into the payload before sending.
+        Injects event_id and UTC timestamp into the payload before sending.
         Auto-initializes the producer if not already initialized.
         Raises NoBrokersAvailable if the broker is offline.
         """
         if self._producer is None:
             self.initialize()
-        payload.update({"timestamp": datetime.now(timezone.utc).timestamp()})
+        payload["event_id"] = uuid.uuid4().hex
+        payload["timestamp"] = datetime.now(timezone.utc).isoformat()
         self._producer.send(topic, payload)
         self._producer.flush()
         logger.info("Published event to topic=%s", topic)

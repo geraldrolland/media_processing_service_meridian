@@ -25,36 +25,52 @@ celery_app.conf.update(
     task_acks_late=True,
     task_reject_on_worker_lost=True,
     task_acks_on_failure_or_timeout=False,
+    task_routes={
+        "app.tasks.process_queued_jobs": {"queue": "media_processing"},
+        "app.tasks.process_transcode_tasks": {"queue": "media_processing"},
+        "app.tasks.process_upload_tasks": {"queue": "media_processing"},
+        "app.tasks.check_completed_jobs": {"queue": "media_processing"},
+        "app.tasks.process_outbox_events": {"queue": "media_processing"},
+        "app.tasks.process_failed_jobs": {"queue": "media_processing"},
+        "app.tasks.process_completed_jobs": {"queue": "media_processing"},
+    },
 )
 
 celery_app.conf.beat_schedule = {
     "process-queued-jobs-every-15-seconds": {
         "task": "app.tasks.process_queued_jobs",
         "schedule": 15.0,
+        "options": {"queue": "media_processing"},
     },
     "process-transcode-tasks-every-10-seconds": {
         "task": "app.tasks.process_transcode_tasks",
         "schedule": 10.0,
+        "options": {"queue": "media_processing"},
     },
     "process-upload-tasks-every-10-seconds": {
         "task": "app.tasks.process_upload_tasks",
         "schedule": 10.0,
+        "options": {"queue": "media_processing"},
     },
     "check-completed-jobs-every-15-seconds": {
         "task": "app.tasks.check_completed_jobs",
         "schedule": 15.0,
+        "options": {"queue": "media_processing"},
     },
     "process-outbox-every-10-seconds": {
         "task": "app.tasks.process_outbox_events",
         "schedule": 10.0,
+        "options": {"queue": "media_processing"},
     },
     "process-failed-jobs-every-15-seconds": {
         "task": "app.tasks.process_failed_jobs",
         "schedule": 15.0,
+        "options": {"queue": "media_processing"},
     },
     "process-completed-jobs-every-15-seconds": {
         "task": "app.tasks.process_completed_jobs",
         "schedule": 15.0,
+        "options": {"queue": "media_processing"},
     },
 }
 
