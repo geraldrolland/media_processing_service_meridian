@@ -22,6 +22,19 @@ _kafka_errors_mock.NoBrokersAvailable = _FakeNoBrokersAvailable
 sys.modules["kafka"] = _kafka_mock
 sys.modules["kafka.errors"] = _kafka_errors_mock
 
+
+class _FakeFfmpegError(Exception):
+    """Mimics ffmpeg.Error(cmd, out, err) with .stderr bytes."""
+
+    def __init__(self, cmd, out, err):
+        super().__init__("ffprobe error (see stderr output for detail)")
+        self.cmd = cmd
+        self.out = out
+        self.stderr = err
+
+
+sys.modules["ffmpeg"].Error = _FakeFfmpegError
+
 from app.models.job import Job, JobStatus
 from app.models.transcode_task import TranscodeTask, TranscodeTaskStatus
 from app.models.upload_task import UploadTask, UploadStatus
@@ -633,6 +646,7 @@ class TestProcessCompletedJobs:
         assert result == {"processed": 0}
         session.close.assert_called_once()
 
+    @patch("app.tasks.process_completed_jobs.os.path.exists", return_value=True)
     @patch("app.tasks.process_completed_jobs.get_video_framerate", return_value=30.0)
     @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
     @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
@@ -644,7 +658,7 @@ class TestProcessCompletedJobs:
     def test_successful_publish(
         self, mock_get_session, mock_acquire, mock_release,
         mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
-        mock_get_framerate,
+        mock_get_framerate, mock_exists,
     ):
         session = mock_get_session.return_value
         job = _make_job(status=JobStatus.COMPLETED, published=False)
@@ -695,6 +709,7 @@ class TestProcessCompletedJobs:
         mock_get_duration.assert_called_once()
         mock_get_framerate.assert_called_once()
 
+    @patch("app.tasks.process_completed_jobs.os.path.exists", return_value=True)
     @patch("app.tasks.process_completed_jobs.get_video_framerate", return_value=30.0)
     @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
     @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
@@ -706,7 +721,7 @@ class TestProcessCompletedJobs:
     def test_segment_urls_collected(
         self, mock_get_session, mock_acquire, mock_release,
         mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
-        mock_get_framerate,
+        mock_get_framerate, mock_exists,
     ):
         session = mock_get_session.return_value
         job = _make_job(status=JobStatus.COMPLETED, published=False)
@@ -753,3 +768,112 @@ class TestProcessCompletedJobs:
         assert "manifest_metadata" in added_outbox.payload
         assert added_outbox.payload["manifest_metadata"]["video_duration"] == 120.5
         assert added_outbox.payload["manifest_metadata"]["framerate"] == 30.0
+
+    @patch("app.tasks.process_completed_jobs.os.path.exists", return_value=False)
+    @patch("app.tasks.process_completed_jobs.download_object")
+    @patch("app.tasks.process_completed_jobs.get_video_framerate", return_value=30.0)
+    @patch("app.tasks.process_completed_jobs.get_video_duration", return_value=120.5)
+    @patch("app.tasks.process_completed_jobs.build_object_url", return_value="http://minio:9000/vidsegments/vid1/720p/seg_001.mp4")
+    @patch("app.tasks.process_completed_jobs.resolve_object_key", return_value="vid1/720p/seg_001.mp4")
+    @patch("app.tasks.process_completed_jobs.MediaCleanup")
+    @patch("app.tasks.process_completed_jobs.release_lock")
+    @patch("app.tasks.process_completed_jobs.acquire_lock")
+    @patch("app.tasks.process_completed_jobs.get_sync_session")
+    def test_missing_file_redownload(
+        self, mock_get_session, mock_acquire, mock_release,
+        mock_cleanup_cls, mock_resolve, mock_build_url, mock_get_duration,
+        mock_get_framerate, mock_download, mock_exists,
+    ):
+        session = mock_get_session.return_value
+        job = _make_job(status=JobStatus.COMPLETED, published=False)
+        session.query.return_value.filter.return_value.limit.return_value.all.return_value = [job]
+
+        mock_acquire.return_value = MagicMock()
+        mock_cleanup_cls.return_value = MagicMock()
+
+        mock_tc_id = MagicMock()
+        mock_tc_id.id = "tc1"
+        mock_query_transcode = MagicMock()
+        mock_query_transcode.filter.return_value.all.return_value = [mock_tc_id]
+
+        upload_task = _make_upload_task(files=["/tmp/transcoded/vid1/720p/seg_001.mp4"])
+        mock_query_upload = MagicMock()
+        mock_query_upload.filter.return_value.all.return_value = [upload_task]
+
+        call_count = [0]
+
+        def query_side_effect(model):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return session.query.return_value
+            if call_count[0] == 2:
+                return mock_query_transcode
+            return mock_query_upload
+
+        session.query.side_effect = query_side_effect
+
+        from app.tasks.process_completed_jobs import process_completed_jobs
+        result = process_completed_jobs()
+
+        assert result["processed"] == 1
+        assert job.published is True
+        mock_download.assert_called_once()
+        download_args = mock_download.call_args[0]
+        assert download_args[0] == job.object_url
+        assert download_args[1] == "/tmp/downloads/vid1.mp4"
+        assert download_args[2] == "viduploads"
+        mock_get_duration.assert_called_once()
+
+    @patch("app.tasks.process_completed_jobs.os.path.exists", return_value=True)
+    @patch("app.tasks.process_completed_jobs.get_video_framerate", return_value=30.0)
+    @patch("app.tasks.process_completed_jobs.get_video_duration")
+    @patch("app.tasks.process_completed_jobs.MediaCleanup")
+    @patch("app.tasks.process_completed_jobs.release_lock")
+    @patch("app.tasks.process_completed_jobs.acquire_lock")
+    @patch("app.tasks.process_completed_jobs.get_sync_session")
+    def test_probe_failure_marks_failed(
+        self, mock_get_session, mock_acquire, mock_release,
+        mock_cleanup_cls, mock_get_duration, mock_get_framerate, mock_exists,
+    ):
+        mock_get_duration.side_effect = _FakeFfmpegError(
+            "ffprobe", b"", b"No such file or directory"
+        )
+
+        session = mock_get_session.return_value
+        job = _make_job(status=JobStatus.COMPLETED, published=False)
+        session.query.return_value.filter.return_value.limit.return_value.all.return_value = [job]
+
+        mock_acquire.return_value = MagicMock()
+        mock_cleanup = MagicMock()
+        mock_cleanup_cls.return_value = mock_cleanup
+
+        mock_tc_id = MagicMock()
+        mock_tc_id.id = "tc1"
+        mock_query_transcode = MagicMock()
+        mock_query_transcode.filter.return_value.all.return_value = [mock_tc_id]
+
+        upload_task = _make_upload_task(files=["/tmp/transcoded/vid1/720p/seg_001.mp4"])
+        mock_query_upload = MagicMock()
+        mock_query_upload.filter.return_value.all.return_value = [upload_task]
+
+        call_count = [0]
+
+        def query_side_effect(model):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return session.query.return_value
+            if call_count[0] == 2:
+                return mock_query_transcode
+            return mock_query_upload
+
+        session.query.side_effect = query_side_effect
+
+        from app.tasks.process_completed_jobs import process_completed_jobs
+        result = process_completed_jobs()
+
+        assert result == {"processed": 0}
+        assert job.status == JobStatus.FAILED.value
+        assert job.published is False
+        session.commit.assert_called()
+        session.add.assert_not_called()
+        mock_cleanup.cleanup_temp_files.assert_not_called()

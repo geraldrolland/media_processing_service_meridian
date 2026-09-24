@@ -4,10 +4,13 @@ import logging
 import os
 from urllib.parse import urlparse
 
+import ffmpeg
+
 from app.celery_app import celery_app
 from app.db_config import get_sync_session
 from app.lock import acquire_lock, release_lock, LockState
 from app.media_service import MediaCleanup
+from app.minio_client import download_object
 from app.models.job import Job, JobStatus
 from app.models.outbox import Outbox
 from app.models.transcode_task import TranscodeTask
@@ -96,15 +99,37 @@ def process_completed_jobs():
                 video_file_path = os.path.join(
                     settings.vid_download_dir, f"{job.video_id}{ext}"
                 )
-                manifest_metadata = {
-                    "manifest_type": "static",
-                    "video_duration": get_video_duration(video_file_path),
-                    "framerate": get_video_framerate(video_file_path),
-                    "segment_duration": settings.segment_duration,
-                    "renditions": settings.renditions,
-                    "media_prefix": f"{settings.minio_segment_bucket}/{job.video_id}/",
-                    "segment_filename_prefix": settings.segment_prefix,
-                }
+                if not os.path.exists(video_file_path):
+                    os.makedirs(settings.vid_download_dir, exist_ok=True)
+                    logger.info(
+                        "Local file %s missing for job %s, re-downloading",
+                        video_file_path,
+                        job.id,
+                    )
+                    download_object(
+                        job.object_url, video_file_path, settings.minio_download_bucket
+                    )
+                try:
+                    manifest_metadata = {
+                        "manifest_type": "static",
+                        "video_duration": get_video_duration(video_file_path),
+                        "framerate": get_video_framerate(video_file_path),
+                        "segment_duration": settings.segment_duration,
+                        "renditions": settings.renditions,
+                        "media_prefix": f"{settings.minio_segment_bucket}/{job.video_id}/",
+                        "segment_filename_prefix": settings.segment_prefix,
+                    }
+                except ffmpeg.Error as probe_err:
+                    stderr = (probe_err.stderr or b"").decode("utf-8", errors="replace")
+                    logger.error(
+                        "ffprobe failed for job %s (%s): %s",
+                        job.id,
+                        video_file_path,
+                        stderr,
+                    )
+                    job.status = JobStatus.FAILED.value
+                    session.commit()
+                    continue
 
                 # 5. Cleanup temp files (after duration extraction)
                 cleanup.cleanup_temp_files(job.video_id)
