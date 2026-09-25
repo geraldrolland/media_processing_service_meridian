@@ -1,5 +1,6 @@
 """Tests for app.tasks module -- all 7 Celery tasks."""
 
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch, MagicMock
@@ -820,7 +821,7 @@ class TestProcessCompletedJobs:
         mock_download.assert_called_once()
         download_args = mock_download.call_args[0]
         assert download_args[0] == job.object_url
-        assert download_args[1] == "/tmp/downloads/vid1.mp4"
+        assert download_args[1] == os.path.join("/tmp/downloads", "vid1.mp4")
         assert download_args[2] == "viduploads"
         mock_get_duration.assert_called_once()
 

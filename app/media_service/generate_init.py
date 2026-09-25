@@ -28,7 +28,7 @@ class GenerateInit:
             [
                 "ffmpeg", "-hide_banner", "-loglevel", "error",
                 "-i", self.input_file,
-                "-map", "0:a",
+                "-map", "0:a:0",
                 "-c:a", "aac",
                 "-movflags", "+cmaf+dash+frag_keyframe+empty_moov",
                 "-f", "mp4", "-t", "0",
@@ -67,7 +67,7 @@ class GenerateInit:
                 [
                     "ffmpeg", "-hide_banner", "-loglevel", "error",
                     "-i", self.input_file,
-                    "-map", "0:v",
+                    "-map", "0:v:0",
                     "-c:v", "libx264", "-b:v", r["bitrate"],
                     "-s", f"{r['width']}x{r['height']}",
                     "-r", str(fps),

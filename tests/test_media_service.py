@@ -293,6 +293,13 @@ class TestGenerateInit:
         assert mock_popen.call_count == 3
         assert mock_get_framerate.called
 
+        # First video stream only — cover-art (attached_pic) streams must not be mapped
+        video_args = mock_popen.call_args_list[0][0][0]
+        assert video_args[video_args.index("-map") + 1] == "0:v:0"
+        # First audio stream only — multi-audio inputs must not map every track
+        audio_args = mock_popen.call_args_list[2][0][0]
+        assert audio_args[audio_args.index("-map") + 1] == "0:a:0"
+
     @patch("app.media_service.generate_init.get_video_framerate", return_value=30.0)
     @patch("app.media_service.generate_init.subprocess.Popen")
     def test_generate_init_failure(self, mock_popen, mock_get_framerate):
